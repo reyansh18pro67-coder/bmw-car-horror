@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ReyPaint Horror: House Light</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #010103; font-family: 'Inter', sans-serif; touch-action: none; }
+        #hud { 
+            position: absolute; top: 30px; left: 30px; color: white; pointer-events: none; 
+            background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(12px);
+            padding: 20px; border-radius: 4px; border-left: 5px solid #fc8019;
+        }
+        #stats { position: absolute; top: 30px; right: 30px; color: #fc8019; font-weight: 900; font-size: 28px; z-index: 10; }
+        .stamina-bg { width: 200px; height: 4px; background: rgba(255,255,255,0.1); margin: 10px 0; }
+        #stamina-bar { width: 100%; height: 100%; background: #fc8019; box-shadow: 0 0 10px #fc8019; }
+        .task { margin: 8px 0; font-size: 11px; letter-spacing: 2px; opacity: 0.4; text-transform: uppercase; }
+        .active { opacity: 1; color: #fff; font-weight: bold; }
+        .done { opacity: 0.1; text-decoration: line-through; }
+        #interaction-prompt { 
+            position: absolute; bottom: 25%; left: 50%; transform: translateX(-50%);
+            color: #fc8019; font-weight: 800; display: none; letter-spacing: 5px; font-size: 22px;
+            text-align: center; pointer-events: none;
+        }
+        #win-screen {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); display: none; flex-direction: column;
+            align-items: center; justify-content: center; color: white; z-index: 100;
+            text-align: center; backdrop-filter: blur(15px);
+        }
+        .popper { font-size: 100px; margin-bottom: 20px; animation: pop 0.6s cubic-bezier(0.17, 0.89, 0.32, 1.49); }
+        #restart-btn {
+            background: #fc8019; border: none; padding: 15px 40px; color: black;
+            font-weight: bold; font-size: 18px; cursor: pointer; border-radius: 4px;
+            margin-top: 20px; transition: 0.3s;
+        }
+        #restart-btn:hover { background: #fff; transform: scale(1.1); }
+        
+        /* Mobile Controls */
+        #mobile-controls {
+            position: absolute; bottom: 40px; width: 100%; display: none;
+            justify-content: space-between; padding: 0 40px; box-sizing: border-box;
+            user-select: none; -webkit-user-select: none;
+        }
+        #joystick-base {
+            width: 120px; height: 120px; background: rgba(255,255,255,0.1);
+            border-radius: 50%; border: 2px solid rgba(252, 128, 25, 0.3);
+            position: relative; touch-action: none;
+        }
+        #joystick-stick {
+            width: 50px; height: 50px; background: #fc8019; border-radius: 50%;
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+        }
+        .m-btn {
+            width: 70px; height: 70px; background: rgba(252, 128, 25, 0.2);
+            border: 2px solid #fc8019; border-radius: 50%; color: white;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: bold; font-size: 14px; margin-bottom: 10px;
+        }
+        .m-btn:active { background: #fc8019; color: black; }
+
+        @keyframes pop { 0% { transform: scale(0) rotate(-45deg); } 100% { transform: scale(1) rotate(0); } }
+        
+        @media (max-width: 1024px) {
+            #mobile-controls { display: flex; }
+            #hud { top: 10px; left: 10px; transform: scale(0.8); transform-origin: top left; }
+            #stats { top: 10px; right: 10px; font-size: 18px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="stats">WINS: <span id="win-count">0</span></div>
+    <div id="hud">
+        <div style="font-size: 10px; letter-spacing: 3px; color: #fc8019;">VEHICLE_OS_V2.6</div>
+        <div class="stamina-bg"><div id="stamina-bar"></div></div>
+        <div id="task-bar">
+            <div id="t1" class="task active">01. Locate Key</div>
+            <div id="t2" class="task">02. Refuel Vehicle</div>
+            <div id="t3" class="task">03. Drive to White Line</div>
+        </div>
+    </div>
+
+    <div id="mobile-controls">
+        <div id="joystick-base"><div id="joystick-stick"></div></div>
+        <div style="display:flex; flex-direction:column;">
+            <div class="m-btn" id="btn-run">RUN</div>
+            <div class="m-btn" id="btn-interact">E</div>
+        </div>
+    </div>
+
+    <div id="interaction-prompt">E _ INTERACT</div>
+    <div id="win-screen">
+        <div class="popper">🎉</div>
+        <h1 style="color:#fc8019; font-size: 50px;">ESCAPED!</h1>
+        <p style="letter-spacing: 5px;">YOU SURVIVED THE FOREST</p>
+        <button id="restart-btn" onclick="location.reload()">PLAY AGAIN</button>
+    </div>
+
+    <script type="importmap">
+        { "imports": { 
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "cannon": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+        }}
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import * as CANNON from 'cannon';
+
+        let scene, camera, renderer, world, clock, torch, houseLight;
+        let keys = { w: false, s: false, a: false, d: false, shift: false };
+        let stamina = 100, hasKey = false, hasFuel = false, wins = 0, isGameOver = false;
+        let playerBody, keyMesh, fuelMesh, carMesh, ghost, gateMesh, finishLine;
+        let isDriving = false, carSpeed = 0, carRotation = Math.PI;
+        let leftHeadlight, rightHeadlight;
+
+        let joyActive = false, joyAngle = 0, joyDist = 0;
+
+        wins = parseInt(localStorage.getItem('reypaint_wins')) || 0;
+        document.getElementById('win-count').innerText = wins;
+
+        init();
+        animate();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x020205);
+            scene.fog = new THREE.FogExp2(0x020205, 0.018);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+            clock = new THREE.Clock();
+
+            world = new CANNON.World({ gravity: new CANNON.Vec3(0, -20, 0) });
+
+            scene.add(new THREE.AmbientLight(0x202040, 0.2));
+            
+            torch = new THREE.SpotLight(0xffffff, 300, 150, Math.PI/5, 0.4);
+            torch.castShadow = true;
+            camera.add(torch);
+            torch.target = new THREE.Object3D();
+            camera.add(torch.target);
+            torch.target.position.set(0, 0, -1);
+            scene.add(camera);
+
+            createWorld();
+            setupControls();
+            setupMobileEvents();
+        }
+
+        function createTree(x, z) {
+            const group = new THREE.Group();
+            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.4, 3), new THREE.MeshStandardMaterial({color: 0x1a0d00}));
+            trunk.position.y = 1.5;
+            const leaves = new THREE.Mesh(new THREE.ConeGeometry(2, 5, 6), new THREE.MeshStandardMaterial({color: 0x052205}));
+            leaves.position.y = 5;
+            group.add(trunk, leaves);
+            group.position.set(x, 0, z);
+            scene.add(group);
+        }
+
+        function createStreetLight(x, z) {
+            const group = new THREE.Group();
+            const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.15, 10), new THREE.MeshStandardMaterial({color: 0x111111}));
+            pole.position.y = 5;
+            const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.5, 2), new THREE.MeshStandardMaterial({color: 0x222222}));
+            lamp.position.set(0, 10, 0.5);
+            const light = new THREE.PointLight(0xfc8019, 60, 50);
+            light.position.set(0, 10, 1);
+            group.add(pole, lamp, light);
+            group.position.set(x, 0, z);
+            scene.add(group);
+        }
+
+        function createWorld() {
+            // Ground
+            const ground = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), new THREE.MeshStandardMaterial({ color: 0x0a1a0a }));
+            ground.rotation.x = -Math.PI/2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+            
+            const gBody = new CANNON.Body({ shape: new CANNON.Plane(), type: CANNON.Body.STATIC });
+            gBody.quaternion.setFromEuler(-Math.PI/2, 0, 0);
+            world.addBody(gBody);
+
+            // Single Main Road
+            const road1 = new THREE.Mesh(new THREE.PlaneGeometry(20, 1000), new THREE.MeshStandardMaterial({color: 0x111111}));
+            road1.rotation.x = -Math.PI/2; road1.position.set(0, 0.02, -450); scene.add(road1);
+
+            // Streetlights on Main Road only
+            for(let z = 50; z > -900; z -= 60) { 
+                createStreetLight(12, z); 
+                createStreetLight(-12, z); 
+            }
+
+            // Trees (only outside road area)
+            for(let i = 0; i < 500; i++) {
+                let rx = (Math.random() - 0.5) * 600; 
+                let rz = (Math.random() - 0.5) * 1000;
+                if (Math.abs(rx) > 18) createTree(rx, rz);
+            }
+
+            // Car (Moved to be on the road/path area)
+            carMesh = new THREE.Mesh(new THREE.BoxGeometry(7, 4, 14), new THREE.MeshStandardMaterial({ color: 0x080808 }));
+            carMesh.position.set(0, 2, -30);
+            scene.add(carMesh);
+
+            const createHeadlight = (offsetX) => {
+                const light = new THREE.SpotLight(0xffffee, 500, 200, Math.PI/4, 0.5);
+                light.position.set(offsetX, 0, 7.1);
+                light.castShadow = true;
+                const target = new THREE.Object3D();
+                target.position.set(offsetX, 0, 20);
+                light.target = target;
+                carMesh.add(light); carMesh.add(target);
+                light.visible = false;
+                return light;
+            };
+            leftHeadlight = createHeadlight(-2.5);
+            rightHeadlight = createHeadlight(2.5);
+
+            // House
+            const house = new THREE.Group();
+            [[20,15,1, 0,7.5,-100], [1,15,30, -10,7.5,-85], [1,15,30, 10,7.5,-85]].forEach(p => {
+                const m = new THREE.Mesh(new THREE.BoxGeometry(p[0],p[1],p[2]), new THREE.MeshStandardMaterial({color: 0x111111}));
+                m.position.set(p[3],p[4],p[5]); house.add(m);
+            });
+            scene.add(house);
+
+            houseLight = new THREE.PointLight(0xfc8019, 50, 40);
+            houseLight.position.set(0, 12, -85);
+            houseLight.castShadow = true;
+            scene.add(houseLight);
+
+            gateMesh = new THREE.Mesh(new THREE.BoxGeometry(19, 12, 0.5), new THREE.MeshStandardMaterial({ color: 0x050505 }));
+            gateMesh.position.set(0, 6, -70); scene.add(gateMesh);
+            
+            keyMesh = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.2), new THREE.MeshBasicMaterial({color: 0xffff00}));
+            keyMesh.position.set(30, 1, 20); scene.add(keyMesh);
+            
+            fuelMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 1.8), new THREE.MeshBasicMaterial({color: 0xff0000}));
+            fuelMesh.position.set(0, 1, -95); scene.add(fuelMesh);
+            
+            // WINNING WHITE LINE
+            finishLine = new THREE.Mesh(new THREE.PlaneGeometry(25, 5), new THREE.MeshBasicMaterial({color: 0xffffff, side: THREE.DoubleSide}));
+            finishLine.rotation.x = -Math.PI/2; 
+            finishLine.position.set(0, 0.1, -850); 
+            scene.add(finishLine);
+
+            ghost = new THREE.Mesh(new THREE.SphereGeometry(2), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.1}));
+            scene.add(ghost);
+
+            playerBody = new CANNON.Body({ mass: 1.5, shape: new CANNON.Sphere(1.8), position: new CANNON.Vec3(0, 5, 45), fixedRotation: true });
+            world.addBody(playerBody);
+        }
+
+        function setupControls() {
+            window.addEventListener('keydown', (e) => { 
+                const k = e.key.toLowerCase();
+                if(keys.hasOwnProperty(k)) keys[k] = true;
+                if(e.shiftKey) keys.shift = true;
+                if(k === 'e') handleInteract();
+            });
+            window.addEventListener('keyup', (e) => { 
+                const k = e.key.toLowerCase();
+                if(keys.hasOwnProperty(k)) keys[k] = false;
+                if(!e.shiftKey) keys.shift = false;
+            });
+            document.body.addEventListener('click', () => { 
+                if(!isGameOver && window.innerWidth > 1024) document.body.requestPointerLock(); 
+            });
+            window.addEventListener('mousemove', (e) => {
+                if(document.pointerLockElement && !isDriving) {
+                    camera.rotation.y -= e.movementX * 0.002;
+                    camera.rotation.x = Math.max(-1.5, Math.min(1.5, camera.rotation.x - e.movementY * 0.002));
+                }
+            });
+        }
+
+        function setupMobileEvents() {
+            const stick = document.getElementById('joystick-stick');
+            const base = document.getElementById('joystick-base');
+            const btnRun = document.getElementById('btn-run');
+            const btnInt = document.getElementById('btn-interact');
+
+            base.addEventListener('touchstart', (e) => { joyActive = true; });
+            document.addEventListener('touchmove', (e) => {
+                if(!joyActive) {
+                    const touch = e.touches[0];
+                    if(touch.clientX > window.innerWidth / 2) {
+                        camera.rotation.y -= (touch.clientX - (window.lastTouchX || touch.clientX)) * 0.005;
+                        window.lastTouchX = touch.clientX;
+                    }
+                    return;
+                }
+                const touch = e.touches[0];
+                const rect = base.getBoundingClientRect();
+                const centerX = rect.left + rect.width/2;
+                const centerY = rect.top + rect.height/2;
+                const dx = touch.clientX - centerX;
+                const dy = touch.clientY - centerY;
+                joyDist = Math.min(Math.sqrt(dx*dx + dy*dy), 50);
+                joyAngle = Math.atan2(dy, dx);
+                stick.style.left = `calc(50% + ${Math.cos(joyAngle) * joyDist}px)`;
+                stick.style.top = `calc(50% + ${Math.sin(joyAngle) * joyDist}px)`;
+
+                keys.w = dy < -20;
+                keys.s = dy > 20;
+                keys.a = dx < -20;
+                keys.d = dx > 20;
+            });
+            document.addEventListener('touchend', () => { 
+                joyActive = false; 
+                keys.w = keys.s = keys.a = keys.d = false;
+                stick.style.left = '50%'; stick.style.top = '50%';
+                window.lastTouchX = null;
+            });
+
+            btnRun.addEventListener('touchstart', () => keys.shift = true);
+            btnRun.addEventListener('touchend', () => keys.shift = false);
+            btnInt.addEventListener('touchstart', handleInteract);
+        }
+
+        function handleInteract() {
+            if(isGameOver) return;
+            const dKey = camera.position.distanceTo(keyMesh.position);
+            const dFuel = camera.position.distanceTo(fuelMesh.position);
+            const dCar = camera.position.distanceTo(carMesh.position);
+
+            if(dKey < 8 && !hasKey) {
+                hasKey = true; keyMesh.visible = false; gateMesh.position.y += 15;
+                document.getElementById('t1').className = 'task done'; document.getElementById('t2').className = 'task active';
+            } else if(dFuel < 8 && hasKey && !hasFuel) {
+                hasFuel = true; fuelMesh.visible = false;
+                document.getElementById('t2').className = 'task done'; document.getElementById('t3').className = 'task active';
+            } else if(dCar < 10 && hasFuel && !isDriving) {
+                isDriving = true; torch.visible = false;
+                leftHeadlight.visible = true; rightHeadlight.visible = true;
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if(isGameOver) return;
+            const dt = Math.min(clock.getDelta(), 0.1);
+            world.step(1/60, dt);
+
+            houseLight.intensity = 40 + Math.random() * 30;
+
+            if(isDriving) {
+                if(keys.w) carSpeed = Math.min(carSpeed + 40 * dt, 80);
+                else if(keys.s) carSpeed = Math.max(carSpeed - 60 * dt, -30);
+                else carSpeed *= 0.98;
+
+                if(Math.abs(carSpeed) > 1) {
+                    const turnDir = carSpeed > 0 ? 1 : -1;
+                    if(keys.a) carRotation += 2 * dt * turnDir;
+                    if(keys.d) carRotation -= 2 * dt * turnDir;
+                }
+
+                carMesh.rotation.y = carRotation;
+                carMesh.position.x += Math.sin(carRotation) * carSpeed * dt;
+                carMesh.position.z += Math.cos(carRotation) * carSpeed * dt;
+
+                const camOffset = new THREE.Vector3(Math.sin(carRotation) * -35, 15, Math.cos(carRotation) * -35);
+                camera.position.lerp(carMesh.position.clone().add(camOffset), 0.1);
+                camera.lookAt(carMesh.position);
+
+                // Check distance to white finish line
+                if(carMesh.position.distanceTo(finishLine.position) < 15) {
+                    isGameOver = true; wins++;
+                    localStorage.setItem('reypaint_wins', wins);
+                    document.getElementById('win-count').innerText = wins;
+                    document.getElementById('win-screen').style.display = "flex";
+                }
+            } else {
+                let speed = (keys.shift && stamina > 0) ? 25 : 12;
+                if(keys.shift && stamina > 0 && (keys.w || keys.s || joyActive)) stamina -= 35 * dt;
+                else stamina = Math.min(100, stamina + 20 * dt);
+                document.getElementById('stamina-bar').style.width = stamina + '%';
+
+                const dir = new THREE.Vector3();
+                camera.getWorldDirection(dir); dir.y = 0; dir.normalize();
+                const side = new THREE.Vector3().crossVectors(dir, new THREE.Vector3(0,1,0)).normalize();
+
+                if(keys.w) { playerBody.position.x += dir.x * speed * dt; playerBody.position.z += dir.z * speed * dt; }
+                if(keys.s) { playerBody.position.x -= dir.x * speed * dt; playerBody.position.z -= dir.z * speed * dt; }
+                if(keys.a) { playerBody.position.x += side.x * speed * dt; playerBody.position.z += side.z * speed * dt; }
+                if(keys.d) { playerBody.position.x -= side.x * speed * dt; playerBody.position.z -= side.z * speed * dt; }
+
+                camera.position.copy(playerBody.position); camera.position.y += 1.8;
+                ghost.position.lerp(camera.position, 0.005);
+                if(ghost.position.distanceTo(camera.position) < 3.5) location.reload();
+            }
+
+            const near = camera.position.distanceTo(keyMesh.position) < 8 || 
+                         camera.position.distanceTo(fuelMesh.position) < 8 || 
+                         camera.position.distanceTo(carMesh.position) < 10;
+            document.getElementById('interaction-prompt').style.display = (near && !isDriving) ? "block" : "none";
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
